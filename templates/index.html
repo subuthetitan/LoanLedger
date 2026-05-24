@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LoanLedger &mdash; Loan &amp; Credit Management System</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", Arial, sans-serif; background: #eef2f7; color: #1f2937; }
+  header { background: #0f3d6b; color: #fff; padding: 18px 28px; }
+  header h1 { font-size: 22px; }
+  header p  { font-size: 13px; opacity: .85; margin-top: 3px; }
+
+  .tabs { display: flex; flex-wrap: wrap; background: #14538f; }
+  .tabs button {
+    background: none; border: none; color: #cfe0f0; padding: 12px 18px;
+    cursor: pointer; font-size: 14px;
+  }
+  .tabs button:hover  { background: #1c66ad; color: #fff; }
+  .tabs button.active { background: #eef2f7; color: #0f3d6b; font-weight: 600; }
+
+  main { padding: 22px 28px; }
+  .panel-title { font-size: 18px; margin-bottom: 12px; color: #0f3d6b; }
+
+  table { width: 100%; border-collapse: collapse; background: #fff;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  th, td { border: 1px solid #d7dee8; padding: 8px 10px; font-size: 13px;
+           text-align: left; }
+  th { background: #dbe7f3; color: #0f3d6b; }
+  tr:nth-child(even) td { background: #f6f9fc; }
+
+  .status-OVERDUE { color: #b91c1c; font-weight: 700; }
+  .status-PAID    { color: #15803d; font-weight: 700; }
+  .status-PENDING { color: #b45309; font-weight: 700; }
+
+  .form-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .form-row input, .form-row select {
+    padding: 7px 9px; border: 1px solid #b9c4d3; border-radius: 4px; font-size: 13px;
+  }
+  button.act {
+    padding: 7px 14px; border: none; border-radius: 4px; cursor: pointer;
+    font-size: 13px; color: #fff;
+  }
+  .btn-add    { background: #15803d; }
+  .btn-edit   { background: #b45309; }
+  .btn-del    { background: #b91c1c; }
+  .btn-save   { background: #14538f; }
+  .btn-cancel { background: #6b7280; }
+  .btn-trig   { background: #7c3aed; }
+  button.mini { padding: 4px 9px; font-size: 12px; margin: 0 2px; }
+
+  .note { font-size: 12px; color: #475569; margin: 8px 0 14px; }
+  .msg  { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin: 10px 0;
+          display: none; }
+  .msg.ok  { background: #dcfce7; color: #166534; display: block; }
+  .msg.err { background: #fee2e2; color: #991b1b; display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LoanLedger</h1>
+  <p>Database-Driven Loan &amp; Credit Management System &mdash; DBMS Lab Mini Project (BCS403)</p>
+</header>
+
+<div class="tabs" id="tabs"></div>
+
+<main>
+  <div id="msg" class="msg"></div>
+  <h2 class="panel-title" id="panelTitle"></h2>
+  <p class="note" id="panelNote"></p>
+
+  <!-- add / edit form -->
+  <div id="formArea" class="form-row"></div>
+
+  <!-- data grid -->
+  <div id="gridArea"></div>
+</main>
+
+<script>
+// ---- table definitions (must match backend) --------------------
+const TABLES = {
+  customer: { label: "Customers", pk: "customer_id",
+    cols: ["name","phone","city","credit_score"] },
+  loan: { label: "Loans", pk: "loan_id",
+    cols: ["customer_id","loan_amount","interest_rate","tenure_months","status"] },
+  emi_schedule: { label: "EMI Schedule", pk: "emi_id",
+    cols: ["loan_id","installment_no","due_date","emi_amount","emi_status"] },
+  payment: { label: "Payments", pk: "payment_id",
+    cols: ["emi_id","loan_id","payment_date","amount_paid","payment_mode"] },
+  collateral: { label: "Collateral", pk: "collateral_id",
+    cols: ["loan_id","asset_type","description","est_value","ownership"] },
+};
+
+let current = "customer";
+let editId  = null;   // null = add mode, number = edit mode
+
+// ---- build tab bar ---------------------------------------------
+const tabBar = document.getElementById("tabs");
+Object.keys(TABLES).forEach(t => {
+  const b = document.createElement("button");
+  b.textContent = TABLES[t].label;
+  b.onclick = () => switchTab(t);
+  b.dataset.tab = t;
+  tabBar.appendChild(b);
+});
+// extra tabs for views + trigger
+["v_loan_summary","v_repayment_analytics","trigger"].forEach(v => {
+  const b = document.createElement("button");
+  b.textContent = v==="trigger" ? "Trigger Demo"
+                : v==="v_loan_summary" ? "View: Loan Summary"
+                : "View: Repayment Analytics";
+  b.onclick = () => v==="trigger" ? showTrigger() : showView(v);
+  b.dataset.tab = v;
+  tabBar.appendChild(b);
+});
+
+function setActive(tab){
+  document.querySelectorAll(".tabs button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === tab));
+}
+
+function flash(text, ok=true){
+  const m = document.getElementById("msg");
+  m.textContent = text;
+  m.className = "msg " + (ok ? "ok" : "err");
+  setTimeout(() => { m.className = "msg"; }, 4000);
+}
+
+// ---- switch to a CRUD table tab --------------------------------
+function switchTab(t){
+  current = t; editId = null;
+  setActive(t);
+  document.getElementById("panelTitle").textContent = TABLES[t].label;
+  document.getElementById("panelNote").textContent =
+    "Add, edit or delete rows below. Every change is written to MySQL via SQL " +
+    "(INSERT / UPDATE / DELETE) and re-fetched with SELECT.";
+  buildForm();
+  loadGrid();
+}
+
+// ---- build the add/edit form -----------------------------------
+function buildForm(values = {}){
+  const area = document.getElementById("formArea");
+  area.innerHTML = "";
+  TABLES[current].cols.forEach(c => {
+    const inp = document.createElement("input");
+    inp.id = "f_" + c;
+    inp.placeholder = c;
+    inp.value = values[c] !== undefined && values[c] !== null ? values[c] : "";
+    area.appendChild(inp);
+  });
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "act " + (editId ? "btn-save" : "btn-add");
+  saveBtn.textContent = editId ? "Save changes" : "Add row";
+  saveBtn.onclick = saveRow;
+  area.appendChild(saveBtn);
+
+  if (editId){
+    const cancel = document.createElement("button");
+    cancel.className = "act btn-cancel";
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => { editId = null; buildForm(); };
+    area.appendChild(cancel);
+  }
+}
+
+// ---- load + render the grid ------------------------------------
+async function loadGrid(){
+  const res  = await fetch("/api/" + current);
+  const data = await res.json();
+  renderGrid(data.columns, data.rows, true);
+}
+
+function renderGrid(columns, rows, editable){
+  const g = document.getElementById("gridArea");
+  let html = "<table><tr>";
+  columns.forEach(c => html += "<th>" + c + "</th>");
+  if (editable) html += "<th>Actions</th>";
+  html += "</tr>";
+
+  rows.forEach(r => {
+    html += "<tr>";
+    columns.forEach(c => {
+      let val = r[c];
+      let cls = "";
+      if (c === "emi_status" || c === "status")
+        cls = " class='status-" + val + "'";
+      html += "<td" + cls + ">" + (val===null?"":val) + "</td>";
+    });
+    if (editable){
+      const id = r[TABLES[current].pk];
+      html += "<td>" +
+        "<button class='act btn-edit mini' onclick='startEdit("+id+")'>Edit</button>" +
+        "<button class='act btn-del  mini' onclick='delRow("+id+")'>Delete</button>" +
+        "</td>";
+    }
+    html += "</tr>";
+  });
+  html += "</table>";
+  g.innerHTML = html;
+}
+
+// ---- INSERT / UPDATE -------------------------------------------
+async function saveRow(){
+  const body = {};
+  TABLES[current].cols.forEach(c => {
+    const v = document.getElementById("f_" + c).value.trim();
+    body[c] = v === "" ? null : v;
+  });
+  let res;
+  if (editId){
+    res = await fetch("/api/"+current+"/"+editId, {
+      method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body) });
+  } else {
+    res = await fetch("/api/"+current, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body) });
+  }
+  const out = await res.json();
+  if (out.error){ flash("SQL error: " + out.error, false); return; }
+  flash(editId ? "Row updated (UPDATE committed)"
+               : "Row inserted (INSERT committed)");
+  editId = null;
+  buildForm();
+  loadGrid();
+}
+
+// ---- start editing a row ---------------------------------------
+async function startEdit(id){
+  const res  = await fetch("/api/" + current);
+  const data = await res.json();
+  const row  = data.rows.find(r => r[TABLES[current].pk] == id);
+  editId = id;
+  buildForm(row);
+}
+
+// ---- DELETE ----------------------------------------------------
+async function delRow(id){
+  if (!confirm("Delete row " + id + " ? This runs a SQL DELETE.")) return;
+  const res = await fetch("/api/"+current+"/"+id, { method:"DELETE" });
+  const out = await res.json();
+  if (out.error){ flash("SQL error: " + out.error, false); return; }
+  flash("Row deleted (DELETE committed)");
+  loadGrid();
+}
+
+// ---- show a VIEW (read-only) -----------------------------------
+async function showView(v){
+  setActive(v); editId = null;
+  document.getElementById("formArea").innerHTML = "";
+  document.getElementById("panelTitle").textContent =
+    v==="v_loan_summary" ? "View: Loan Summary" : "View: Repayment Analytics";
+  document.getElementById("panelNote").textContent =
+    "This is a MySQL VIEW (CREATE VIEW). It joins multiple tables and is " +
+    "read-only &mdash; computed live from the base tables.";
+  const res  = await fetch("/api/view/" + v);
+  const data = await res.json();
+  renderGrid(data.columns, data.rows, false);
+}
+
+// ---- TRIGGER demo ----------------------------------------------
+function showTrigger(){
+  setActive("trigger"); editId = null;
+  document.getElementById("panelTitle").textContent = "Trigger Demo: Overdue Detection";
+  document.getElementById("panelNote").textContent =
+    "The BEFORE UPDATE trigger 'trg_overdue_flag' auto-flags a PENDING EMI as " +
+    "OVERDUE if its due date has passed, and lowers that customer's credit score by 20.";
+  const area = document.getElementById("formArea");
+  area.innerHTML =
+    "<input id='trigId' placeholder='Enter EMI id (e.g. 7)'>" +
+    "<button class='act btn-trig' onclick='runTrigger()'>Run trigger on this EMI</button>";
+  document.getElementById("gridArea").innerHTML =
+    "<p class='note'>Tip: EMI id 7 in the sample data is PENDING with a past " +
+    "due date &mdash; running the trigger on it will turn it OVERDUE. Then open " +
+    "the Customers tab to see the reduced credit score.</p>";
+}
+
+async function runTrigger(){
+  const id = document.getElementById("trigId").value.trim();
+  if (!id){ flash("Enter an EMI id first", false); return; }
+  const res = await fetch("/api/trigger-check/" + id, { method:"POST" });
+  const out = await res.json();
+  if (out.error){ flash("SQL error: " + out.error, false); return; }
+  flash("Trigger executed on EMI " + id);
+  if (out.emi){
+    renderGrid(Object.keys(out.emi), [out.emi], false);
+  }
+}
+
+// ---- start on the customer tab ---------------------------------
+switchTab("customer");
+</script>
+</body>
+</html>
