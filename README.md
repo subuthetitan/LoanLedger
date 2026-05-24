@@ -1,4 +1,4 @@
-# LoanLedger — DBMS Lab Mini Project (BCS403)
+# LoanLedger
 
 Loan & Credit Management System. Flask + MySQL web application.
 
